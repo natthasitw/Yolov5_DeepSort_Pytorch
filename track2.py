@@ -80,7 +80,7 @@ def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
 class Opt:
     def __init__(self):
         self.output = 'inference/output'
-        self.source = "../data/Hawkeye_Dataset/stationary_tracker/SynxIPcam_urn-uuid-643C9869-12C593A8-001D-0000-000066334873_2020-11-21_17-23-00(1).mp4"
+        self.source = "../data/Hawkeye_Dataset/tracking/video1/SynxIPcam_urn-uuid-643C9869-12C593A8-001D-0000-000066334873_2020-11-21_17-23-00(1).mp4"
         self.yolo_weights = 'yolov5/weights/crowdhuman_yolov5m.pt'
         self.deep_sort_weights = 'deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7'
         self.show_vid = False
