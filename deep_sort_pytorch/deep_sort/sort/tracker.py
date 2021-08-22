@@ -92,6 +92,7 @@ class Tracker:
             features += track.features
             targets += [track.track_id for _ in track.features]
             track.features = []
+            track.stationary_check()  # Vee_Edit
         self.metric.partial_fit(
             np.asarray(features), np.asarray(targets), active_targets)
 

@@ -19,7 +19,26 @@ from pathlib import Path
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
+import json
 
+PATH_ZONE = "../data/Hawkeye_Dataset/stationary_tracker/SynxIPcam_2020-11-20_10-41-59.70.json"
+
+def initialize_zones(path_zone):
+    with open(path_zone) as f:
+      zone_data = json.load(f)
+
+    zonelist = []
+    for i in zone_data['shapes']:
+      zone_id = i['label']
+      coord = i['points']
+      zone = zone_data(coord, zone_id)
+      zonelist.append(zone)
+
+    return zonelist
+
+zonelist = initialize_zones(PATH_ZONE)
+
+############################################
 
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
 
@@ -226,6 +245,12 @@ with torch.no_grad():
                         stationary = output[10]
                         if stationary == 0:
                             still_wrt = 'o'
+                            x1, y1, x2, y2 = output[0:4]
+                            xmid_feet = int(output[0] + ((output[2] - output[0])/2))
+                            ybot_feet = int(output[1] + (output[3] - output[1]))
+                            zone_listcheck = list(map(lambda z: z.is_inside_polygon((xmid_feet, ybot_feet)), zonelist))
+
+
                         else:
                             still_wrt = '*'
 

@@ -81,6 +81,15 @@ class Track:
         self._n_init = n_init
         self._max_age = max_age
 
+        #####vee_edit######
+        self.stationary = False
+        self.accum_on = 0
+        self.accum_off = 0
+        self.accum_lim = 3
+        self.accum_lim_still2move = 3
+        self.accum_lim_move2still = 20
+        #####vee_edit######
+
     def to_tlwh(self):
         """Get current position in bounding box format `(top left x, top left y,
         width, height)`.
@@ -168,3 +177,65 @@ class Track:
     def is_deleted(self):
         """Returns True if this track is dead and should be deleted."""
         return self.state == TrackState.Deleted
+
+    #####vee_edit######
+    def _calc_still_threshold(self, bnbh):
+        return (bnbh + 75)/1250
+
+    def _check_move2still(self):
+        # check if track's velocity is below threshold
+        thresh = self._calc_still_threshold(self.mean[3])
+        if self.mean[4] < thresh and self.mean[4] > -thresh and self.mean[5] < thresh and self.mean[5] > -thresh and self.mean[7] < thresh and self.mean[7] > -thresh:
+            self.accum_on += 1
+            self.accum_off = 0
+        else:
+            self.accum_off += 1
+
+        if self.accum_off > self.accum_lim:
+            self.accum_on = 0
+            self.accum_off = 0
+        else:
+            if self.accum_on > self.accum_lim_move2still:
+                self.stationary = True
+                self.accum_on = 0
+                self.accum_off = 0
+
+    def _check_still2move(self):
+        # check if track's velocity is below threshold
+        thresh = self._calc_still_threshold(self.mean[3])
+        if not (self.mean[4] < thresh and self.mean[4] > -thresh and self.mean[5] < thresh and self.mean[5] > -thresh and self.mean[7] < thresh and self.mean[7] > -thresh):
+            self.accum_on += 1
+            self.accum_off = 0
+        else:
+            self.accum_off += 1
+
+        if self.accum_off > self.accum_lim:
+            self.accum_on = 0
+            self.accum_off = 0
+        else:
+            if self.accum_on > self.accum_lim_still2move:
+                self.stationary = False
+                self.accum_on = 0
+                self.accum_off = 0
+
+    def stationary_check(self):
+        if self.stationary == False:
+            self._check_move2still()
+        else:
+            self._check_still2move()
+    #####vee_edit######
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
