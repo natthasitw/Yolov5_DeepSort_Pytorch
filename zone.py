@@ -2,30 +2,77 @@ from collections import deque
 import numpy as np
 import cv2
 from random import randint
+import json
+
+class Zones:
+    def __init__(self, zones_polygon):
+        with open(zones_polygon) as f:
+            zone_data = json.load(f)
+
+        zonelist = []
+        for i in zone_data['shapes']:
+            zone_id = i['label']
+            coord = i['points']
+            zone = Zone(coord, zone_id)
+            zonelist.append(zone)
+        self.zonelist = zonelist
+        self.zonelist_buffer = deque(maxlen=int(40))
+        self.frame_counter = 0
+        self.frame_counter_reset = 500
+        self.zones_tz_rec = np.zeros(len(self.zonelist), dtype=bool)
+        self.zones_timer = 0
+
+    def check_zone(self, point):
+        '''
+        check to which zone is this point inside
+        Parameters
+        ----------
+        points: (x,y) point of the bottom middle bounding box representing the feet of person.
+
+        Returns: (zoneindex) that the point belongs to
+        -------
+
+        '''
+        xmid_feet, ybot_feet = point
+        zone_listcheck = list(map(lambda z: z.is_inside_polygon((xmid_feet, ybot_feet)), self.zonelist))
+        _tmp_out = [i for i, x in enumerate(zone_listcheck) if x]
+        if len(_tmp_out) == 0:
+            return None
+        else:
+            return _tmp_out[0]
 
 
-class Zone:
+    def update_frame_count(self):
+        if self.frame_counter >= self.frame_counter_reset:
+            self.zones_timer = 0
+            self.zones_tz_rec = np.zeros(len(self.zonelist))
+        else:
+            self.zones_timer += 1
+
+
+    def update_zone_still_count(self):
+        nstill_zone = list(map(lambda x: x.n_still, self.zonelist))
+        self.zonelist_buffer.append(nstill_zone)
+        return nstill_zone
+
+
+class Zone(object):
     '''
     coord are stored as list of (x,y)
     '''
     def __init__(self, coord, zoneID):
         self.zoneID = zoneID
         self.coord = coord
-        self.n_static = 0
-        self.n_tz = 0
-        self.tzIDs = deque(maxlen=int(50))
-        self.tzfeat = deque(maxlen=int(50))
+        self.n_still = 0
+        self.buffer_bnbs = []
 
     def _reset(self):
-        self.n_static = 0
-        self.n_tz = 0
+        self.n_still = 0
+        self.buffer_bnbs = []
 
-    def _add_ID(self, new_id, new_feat):
-        if new_id not in self.tzIDs:
-            self.tzIDs.append(new_id)
-            self.tzfeat.append(new_feat)
-            self.n_static += 1
-
+    def _add_still(self, bnb):
+        self.n_still += 1
+        self.buffer_bnbs.append(bnb)
 
     def is_inside_polygon(self, p):
         '''
@@ -139,6 +186,47 @@ class Zone:
         # Return true if count is odd, false otherwise
         return (count % 2 == 1)
 
+    def get_zone_centroid(self):
+        coord = np.array(self.coord, dtype=int)
+        _x_list = [vertex[0] for vertex in coord]
+        _y_list = [vertex[1] for vertex in coord]
+        _len = len(coord)
+        _x = sum(_x_list) / _len
+        _y = sum(_y_list) / _len
+        return (int(_x), int(_y))
+
+    def get_bnb_pt_tz(self):
+        if len(self.buffer_bnbs) == 1:
+            bnb = self.buffer_bnbs[0]
+            midx = bnb[0] + (bnb[2] - bnb[0])
+            midy = bnb[1] + (bnb[3] - bnb[1])
+            bnbh = bnb[3] - bnb[1]
+            return (midx, midy, bnbh)
+        else:
+            min_bnby = np.inf
+            max_bnby = -np.inf
+            min_bnbx = np.inf
+            max_bnbx = -np.inf
+            for bnb in self.buffer_bnbs:
+                bnbxleft, bnbytop, bnbxright, bnbybot = bnb
+                if min_bnby > bnbytop:
+                    min_bnby = bnbytop
+                if max_bnby < bnbybot:
+                    max_bnby = bnbybot
+                if min_bnbx > bnbxleft:
+                    min_bnbx = bnbxleft
+                if max_bnbx < bnbxright:
+                    max_bnbx = bnbxright
+
+            midx = (max_bnbx - min_bnbx)/2
+            midy = (max_bnby - min_bnby)/2
+            cbnbh = max_bnby - min_bnby
+
+            return (midx, midy, cbnbh)
+
+
+
+
 
 def compute_color_for_labels(label):
     """
@@ -158,10 +246,10 @@ def centroid(vertexes):
     return (int(_x), int(_y))
 
 
-def draw_zone_on_frame(frame, zone):
+def draw_zone_on_frame(frame, zone, color):
     coord = np.array(zone.coord, dtype=int)
     pts = coord.reshape((-1, 1, 2))
-    color = compute_color_for_labels(randint(0, 100))
+    color = color
 
     frame = cv2.polylines(frame, [pts], True, color, 2)
     org = centroid(coord)

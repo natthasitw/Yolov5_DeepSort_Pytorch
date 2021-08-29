@@ -180,7 +180,7 @@ class Track:
 
     #####vee_edit######
     def _calc_still_threshold(self, bnbh):
-        return (bnbh + 75)/1250
+        return (bnbh - 11.96)/163
 
     def _check_move2still(self):
         # check if track's velocity is below threshold

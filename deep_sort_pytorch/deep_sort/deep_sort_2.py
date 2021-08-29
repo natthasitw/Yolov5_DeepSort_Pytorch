@@ -1,10 +1,10 @@
 import numpy as np
 import torch
 
+from .deep.feature_extractor import Extractor
 from .sort.nn_matching import NearestNeighborDistanceMetric
 from .sort.detection import Detection
 from .sort.tracker import Tracker
-from torchreid.utils import FeatureExtractor    # v
 
 
 
@@ -17,9 +17,7 @@ class DeepSort(object):
         self.min_confidence = min_confidence
         self.nms_max_overlap = nms_max_overlap
 
-        self.extractor = FeatureExtractor(model_name='osnet_x1_0',
-                                           model_path=model_path,
-                                           device='cpu')
+        self.extractor = Extractor(model_path, use_cuda=use_cuda)
 
         max_cosine_distance = max_dist
         metric = NearestNeighborDistanceMetric(

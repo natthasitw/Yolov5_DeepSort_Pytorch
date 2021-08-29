@@ -1,11 +1,9 @@
 import sys
 sys.path.insert(0, './yolov5')
-
 from yolov5.utils.google_utils import attempt_download
 from yolov5.models.experimental import attempt_load
 from yolov5.utils.datasets import LoadImages, LoadStreams
-from yolov5.utils.general import check_img_size, non_max_suppression, scale_coords, \
-    check_imshow,xyxy2xywh
+from yolov5.utils.general import check_img_size, non_max_suppression, scale_coords, check_imshow,xyxy2xywh
 from yolov5.utils.torch_utils import select_device, time_synchronized
 from deep_sort_pytorch.utils.parser import get_config
 from deep_sort_pytorch.deep_sort import DeepSort
@@ -19,28 +17,35 @@ from pathlib import Path
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
-import json
+import numpy as np
+from zone import Zone, Zones
+from sensecam_control import onvif_control
+from matplotlib import pyplot as plt
+from Utils import cap_frame, see_center
+from zone import draw_zone_on_frame
+import pickle as pkl
+from target_zoom import *
 
-PATH_ZONE = "../data/Hawkeye_Dataset/stationary_tracker/SynxIPcam_2020-11-20_10-41-59.70.json"
+RTSP = "rtsp://admin:Hikvisionarv1234@192.168.1.64"
+ip = '192.168.1.64'
+login = 'arvonvif'
+password = 'Arvonvif1234'
+cam = onvif_control.CameraControl(ip, login, password)
+cam.camera_start()
+PATH_ZONE = "zone_frame.json"
+# PATH_ZONE = "../data/Hawkeye_Dataset/stationary_tracker/SynxIPcam_2020-11-20_10-41-59.70.json"
+Zones = Zones(PATH_ZONE)
+with open("PTZ_calibration.pkl", 'rb') as f:
+    cam_param = pkl.load(f)
+    MTX = cam_param['mtx']
+with open("PTZ_P_Matrix.pkl", 'rb') as f:
+    PTZ_P_Matrix = pkl.load(f)
+    P_Matrix = PTZ_P_Matrix['P_Matrix']
 
-def initialize_zones(path_zone):
-    with open(path_zone) as f:
-      zone_data = json.load(f)
-
-    zonelist = []
-    for i in zone_data['shapes']:
-      zone_id = i['label']
-      coord = i['points']
-      zone = zone_data(coord, zone_id)
-      zonelist.append(zone)
-
-    return zonelist
-
-zonelist = initialize_zones(PATH_ZONE)
-
-############################################
+ptz1 = PTZ(ip, login, password, P_Matrix, MTX)
 
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
+
 
 def compute_color_for_id(label):
     """
@@ -50,6 +55,7 @@ def compute_color_for_id(label):
 
     color = [int((p * (label ** 2 - label + 1)) % 255) for p in palette]
     return tuple(color)
+
 
 def xyxy_to_xywh(*xyxy):
     """" Calculates the relative bounding box from absolute pixel values. """
@@ -62,6 +68,7 @@ def xyxy_to_xywh(*xyxy):
     w = bbox_w
     h = bbox_h
     return x_c, y_c, w, h
+
 
 def xyxy_to_tlwh(bbox_xyxy):
     tlwh_bboxs = []
@@ -107,11 +114,13 @@ def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
 class Opt:
     def __init__(self):
         self.output = 'inference/output'
-        self.source = "../data/Hawkeye_Dataset/tracking/video1/SynxIPcam_urn-uuid-643C9869-12C593A8-001D-0000-000066334873_2020-11-21_17-23-00(1).mp4"
+        # self.source = "rtsp://admin:Hikvisionarv1234@192.168.1.64"
+        self.source = "192.168.1.64_01_2021082816381881.mp4"
+        # self.source = "../data/Hawkeye_Dataset/tracking/video1/SynxIPcam_urn-uuid-643C9869-12C593A8-001D-0000-000066334873_2020-11-21_17-23-00(1).mp4"
         self.yolo_weights = 'yolov5/weights/hawkeye_primarydet_2.pt'
         self.deep_sort_weights = 'deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7'
         self.show_vid = False
-        self.save_vid = True
+        self.save_vid = False
         self.save_txt = True
         self.img_size = 640
         self.device = 'cpu'
@@ -122,7 +131,11 @@ class Opt:
         self.classes = 0,1
         self.agnostic_nms = True
         self.augment = True
-        self.config_deepsort = 'deep_sort_pytorch/configs/deep_sort2.yaml'
+        self.config_deepsort = 'deep_sort_pytorch/configs/deep_sort.yaml'
+        self.ip = '192.168.1.64'
+        self.login = 'arvonvif'
+        self.password = 'Arvonvif1234'
+        self.zones = "../data/Hawkeye_Dataset/stationary_tracker/SynxIPcam_2020-11-20_10-41-59.70.json"
 
 opt = Opt()
 
@@ -204,6 +217,9 @@ with torch.no_grad():
             pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
         t2 = time_synchronized()
 
+        for zone in Zones.zonelist:
+            zone._reset()
+
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
@@ -243,16 +259,23 @@ with torch.no_grad():
                         vr = output[8]
                         vh = output[9]
                         stationary = output[10]
-                        if stationary == 0:
+
+                        # Only associate cls 0 (person) who is stationary to Zones
+                        if stationary == 0 and cls == 0:
                             still_wrt = 'o'
+                        else:
+                            print("STATIONARY HERE\n")
+                            still_wrt = '*'
                             x1, y1, x2, y2 = output[0:4]
                             xmid_feet = int(output[0] + ((output[2] - output[0])/2))
                             ybot_feet = int(output[1] + (output[3] - output[1]))
-                            zone_listcheck = list(map(lambda z: z.is_inside_polygon((xmid_feet, ybot_feet)), zonelist))
 
+                            tmp_zoneidx = Zones.check_zone((xmid_feet, ybot_feet))
+                            if tmp_zoneidx is not None:
+                                tmp_zone = Zones.zonelist[tmp_zoneidx]
+                                tmp_zoneid = tmp_zone.zoneID
+                                tmp_zone._add_still(bboxes)
 
-                        else:
-                            still_wrt = '*'
 
                         c = int(cls)  # integer class
                         label = f'{id} {still_wrt} {conf:.2f}'
@@ -261,14 +284,14 @@ with torch.no_grad():
 
                         if save_txt:
                             # to MOT format
-                            bbox_top = output[0]
-                            bbox_left = output[1]
+                            bbox_left = output[0]
+                            bbox_top = output[1]
                             bbox_w = output[2] - output[0]
                             bbox_h = output[3] - output[1]
                             # Write MOT compliant results to file
                             with open(txt_path, 'a') as f:
-                                f.write(('%g ' * 12 + '\n') % (frame_idx, id, cls, bbox_top,
-                                                               bbox_left, bbox_w, bbox_h, vx, vy, vr,
+                                f.write(('%g ' * 12 + '\n') % (frame_idx, id, cls, bbox_left,
+                                                               bbox_top, bbox_w, bbox_h, vx, vy, vr,
                                                                vh, stationary))  # label format
 
             else:
@@ -299,6 +322,58 @@ with torch.no_grad():
 
                     vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                 vid_writer.write(im0)
+
+
+        # Update Zonelist
+        # Zones update number of still in each zone
+        zone_stillcount = Zones.update_zone_still_count()
+
+        # Decision to pick which zone or person to target zoom
+        def pick_zone_tz(in_zonelist_buffer):
+            # THRESH_STILL is how many consecutive nstill in a zone per frame to trigger zoom
+            # This threshold is equivalent to 1 person standing still in a zone for at least 2sec
+            # at 20fps totaling 40. The mean of this specific zone will buffer size of 40 is 1.
+            # This is to prevent jitter noise of false stationary bnb
+            THRESH_STILL = 0.1
+            tmp_zonelist_buffer = np.array(in_zonelist_buffer)
+            meanA = np.mean(tmp_zonelist_buffer, axis=0)
+            meanA_sort_idx = np.argsort(meanA)[::-1]
+            for i in meanA_sort_idx:
+                if Zones.zones_tz_rec[i] == False and meanA[i] > THRESH_STILL:
+                    return i, meanA
+            return None, meanA
+
+        idx_zone_tz, meanA = pick_zone_tz(Zones.zonelist_buffer)
+        print(idx_zone_tz)
+        meanA = list(meanA)
+        with open("zonelog.txt", 'a') as f:
+            f.write(str(meanA)[1:-1] + '\n') # label format
+
+        if idx_zone_tz != None:
+            tmp_zone = Zones.zonelist[idx_zone_tz]
+            print("TARGET ZOOM HERE at ", str(tmp_zone.zoneID))
+            ptx, pty, bnbh = tmp_zone.get_bnb_pt_tz()
+            mag = ptz1.calc_mag(bnbh, 720)
+            p, t, z = ptz1.target_zoom((ptx, pty), mag)
+            ptz1.absmove(p, t, z)
+            target_zooming = True
+            while target_zooming:
+                # During target zooming, tracking will be temporary pause
+                # snapshots of frame will be taken
+                time.sleep(5)
+                target_zooming = False
+                print("Done TARGET ZOOM!!!!")
+                Zones.zones_tz_rec[idx_zone_tz] = True
+
+            ptz1.absmove(*ptz1.home_ptx)
+        Zones.update_frame_count()
+
+
+
+
+
+
+
 
     if save_txt or save_vid:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
@@ -336,4 +411,14 @@ with torch.no_grad():
 #         detect(args)
 
 
+_, homeframe = cap_frame(RTSP)
+for i, zone in enumerate(Zones.zonelist):
+    if i == 3:
+        color = (0,0,255)
+    else:
+        color = (0,255,0)
+    homeframe = draw_zone_on_frame(homeframe, zone, color)
+cv2.imwrite("zone_home_frame.jpg", homeframe)
 
+with open("output/infernece/vee_Test.txt", 'a') as f:
+    f.write("test" + '\n')

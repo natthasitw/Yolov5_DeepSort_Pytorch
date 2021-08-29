@@ -236,14 +236,14 @@ with torch.no_grad():
 
                         if save_txt:
                             # to MOT format
-                            bbox_top = output[0]
-                            bbox_left = output[1]
+                            bbox_left = output[0]
+                            bbox_top = output[1]
                             bbox_w = output[2] - output[0]
                             bbox_h = output[3] - output[1]
                             # Write MOT compliant results to file
                             with open(txt_path, 'a') as f:
-                                f.write(('%g ' * 12 + '\n') % (frame_idx, id, cls, bbox_top,
-                                                               bbox_left, bbox_w, bbox_h, vx, vy, vr,
+                                f.write(('%g ' * 12 + '\n') % (frame_idx, id, cls, bbox_left,
+                                                               bbox_top, bbox_w, bbox_h, vx, vy, vr,
                                                                vh, stationary))  # label format
 
             else:
