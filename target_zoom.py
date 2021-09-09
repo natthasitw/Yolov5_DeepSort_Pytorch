@@ -46,8 +46,12 @@ class PTZ(object):
         self.C_Center = np.dot(-np.linalg.inv(self.P_Matrix[:3, :3]), np.array([self.P_Matrix[:, 3]]).T)
         self.P_Matrix_inv = np.linalg.pinv(self.P_Matrix)
         self.PAN0_SHIFT = 0.00556
-        self.frame0 = self.cap_frame()
+        self.frame0w = 2560
+        self.frame0h = 1440
+        # self.frame0 = self.cap_frame()
+        self.cap = cv.VideoCapture(self.rtsp)
         self.home_ptx = self.getptz()
+
 
         ###############################
         self.F_LEVEL = np.array([2334.76, 19069.86, 36497.66])  # focal length value list
@@ -55,9 +59,7 @@ class PTZ(object):
 
 
     def calc_mag(self, inbnbh, targetbnbh):
-        if (self.frame0 != None).all():
-            imgh,imgw, _ = self.frame0.shape
-        if targetbnbh > imgh:
+        if targetbnbh > self.frame0h:
             print("target bounding height can't exceed image height\n "
                   "set mag to 1 (no zoom)")
             return 1
@@ -117,10 +119,21 @@ class PTZ(object):
             new_pan = 1 + (new_pan + 1)
         if new_pan < 0:
             new_pan += self.PAN0_SHIFT
-        if new_zoom > 0 and new_zoom <= 0.15:
-            new_tilt += 0.008
-        if new_zoom > 0.15:
-            new_tilt += 0.011
+
+        ### Zoom tilt drift ###
+        # if new_zoom > 0 and new_zoom <= 0.15:
+        #     new_tilt += 0.008
+        # if new_zoom > 0.15:
+        #     new_tilt += 0.011
+        def zoom_tilt_diff(inzoom):
+            if inzoom == 0:
+                return 0
+            else:
+                tilt_diff = pow((0.00114405 + inzoom), 0.00203614) - 0.98631007
+                return tilt_diff
+
+        ztd = zoom_tilt_diff(new_zoom)
+        new_tilt = new_tilt + ztd
 
         return new_pan, new_tilt, new_zoom
 
@@ -136,16 +149,37 @@ class PTZ(object):
     def cap_frame(self):
         capture = cv.VideoCapture(self.rtsp)
         ret, frame = capture.read()
+        capture.release()
         if ret == True:
             return frame
         else:
             return None
 
-# ptz1 = PTZ(ip, login, password, P_Matrix, MTX)
-# mag = ptz1.calc_mag(24,200)
-# p,t,z = ptz1.target_zoom((1606,812), mag)
-# ptz1.absmove(p,t,z)
+
+# class PTZslave(PTZ):
+#     def __init__(self, ip, login, password, P_Matrix, intrinsic):
+#         super().__init__(ip, login, password, P_Matrix, intrinsic)
 #
-# A = see_center(RTSP)
-# plt.imshow(see_center(RTSP))
+#     def track_person(self, trackduration, ptx, pty, bnbh):
+#         mag = self.calc_mag(bnbh, 720)
+#         p, t, z = self.target_zoom((ptx, pty), mag)
+#         self.absmove(p, t, z)
+
+
+class FixedCam(object):
+    def __init__(self, ip, login, password):
+        self.ip = ip
+        self.login = login
+        self.password = password
+        self.rtsp = "rtsp://admin:Hikvisionarv1234@" + str(self.ip)
+
+    def cap_frame(self):
+        capture = cv.VideoCapture(self.rtsp)
+        ret, frame = capture.read()
+        capture.release()
+        if ret == True:
+            return frame
+        else:
+            return None
+
 

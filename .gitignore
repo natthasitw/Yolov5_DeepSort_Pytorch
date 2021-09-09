@@ -5,3 +5,5 @@ inference
 *.pkl
 *.jpg
 *.mp4
+vapix.log
+rec_video.py

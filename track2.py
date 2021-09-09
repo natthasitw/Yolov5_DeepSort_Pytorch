@@ -219,18 +219,10 @@ with torch.no_grad():
                         bboxes = output[0:4]
                         id = output[4]
                         cls = output[5]
-                        vx = output[6]
-                        vy = output[7]
-                        vr = output[8]
-                        vh = output[9]
-                        stationary = output[10]
-                        if stationary == 0:
-                            still_wrt = 'o'
-                        else:
-                            still_wrt = '*'
+
 
                         c = int(cls)  # integer class
-                        label = f'{id} {still_wrt} {conf:.2f}'
+                        label = f'{id} {names[c]} {conf:.2f}'
                         color = compute_color_for_id(id)
                         plot_one_box(bboxes, im0, label=label, color=color, line_thickness=2)
 
@@ -243,8 +235,7 @@ with torch.no_grad():
                             # Write MOT compliant results to file
                             with open(txt_path, 'a') as f:
                                 f.write(('%g ' * 12 + '\n') % (frame_idx, id, cls, bbox_left,
-                                                               bbox_top, bbox_w, bbox_h, vx, vy, vr,
-                                                               vh, stationary))  # label format
+                                                               bbox_top, bbox_w, bbox_h,-1, -1, -1, -1))  # label format
 
             else:
                 deepsort.increment_ages()

@@ -18,31 +18,12 @@ import cv2
 import torch
 import torch.backends.cudnn as cudnn
 import numpy as np
-from zone import Zone, Zones
 from sensecam_control import onvif_control
 from matplotlib import pyplot as plt
 from Utils import cap_frame, see_center
-from zone import draw_zone_on_frame
 import pickle as pkl
 from target_zoom import *
 
-RTSP = "rtsp://admin:Hikvisionarv1234@192.168.1.64"
-ip = '192.168.1.64'
-login = 'arvonvif'
-password = 'Arvonvif1234'
-cam = onvif_control.CameraControl(ip, login, password)
-cam.camera_start()
-PATH_ZONE = "zone_frame.json"
-# PATH_ZONE = "../data/Hawkeye_Dataset/stationary_tracker/SynxIPcam_2020-11-20_10-41-59.70.json"
-Zones = Zones(PATH_ZONE)
-with open("PTZ_calibration.pkl", 'rb') as f:
-    cam_param = pkl.load(f)
-    MTX = cam_param['mtx']
-with open("PTZ_P_Matrix.pkl", 'rb') as f:
-    PTZ_P_Matrix = pkl.load(f)
-    P_Matrix = PTZ_P_Matrix['P_Matrix']
-
-ptz1 = PTZ(ip, login, password, P_Matrix, MTX)
 
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
 
@@ -115,20 +96,20 @@ class Opt:
     def __init__(self):
         self.output = 'inference/output'
         # self.source = "rtsp://admin:Hikvisionarv1234@192.168.1.64"
-        self.source = "192.168.1.64_01_2021082816381881.mp4"
+        self.source = "long_vid.mp4"
         # self.source = "../data/Hawkeye_Dataset/tracking/video1/SynxIPcam_urn-uuid-643C9869-12C593A8-001D-0000-000066334873_2020-11-21_17-23-00(1).mp4"
-        self.yolo_weights = 'yolov5/weights/crowdhuman_yolov5m.pt'
+        self.yolo_weights = 'yolov5/weights/hawkeye_primarydet_2.pt'
         self.deep_sort_weights = 'deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7'
         self.show_vid = False
         self.save_vid = True
         self.save_txt = True
         self.img_size = 640
-        self.device = 'cpu'
+        self.device = '0'
         self.evaluate = True
-        self.conf_thres = 0.5
-        self.iou_thres = 0.3
+        self.conf_thres = 0.6
+        self.iou_thres = 0.2
         self.fourcc = 'mp4v'
-        self.classes = 0,1
+        self.classes = 1
         self.agnostic_nms = True
         self.augment = True
         self.config_deepsort = 'deep_sort_pytorch/configs/deep_sort.yaml'
@@ -217,8 +198,6 @@ with torch.no_grad():
             pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
         t2 = time_synchronized()
 
-        for zone in Zones.zonelist:
-            zone._reset()
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
@@ -270,12 +249,6 @@ with torch.no_grad():
                             xmid_feet = int(output[0] + ((output[2] - output[0])/2))
                             ybot_feet = int(output[1] + (output[3] - output[1]))
 
-                            tmp_zoneidx = Zones.check_zone((xmid_feet, ybot_feet))
-                            if tmp_zoneidx is not None:
-                                tmp_zone = Zones.zonelist[tmp_zoneidx]
-                                tmp_zoneid = tmp_zone.zoneID
-                                tmp_zone._add_still(bboxes)
-
 
                         c = int(cls)  # integer class
                         label = f'{id} {still_wrt} {conf:.2f}'
@@ -300,9 +273,6 @@ with torch.no_grad():
             # Print time (inference + NMS)
             print('%sDone. (%.3fs)' % (s, t2 - t1))
 
-            # Draw zones boundry and state
-            im0 = Zones.draw_zones(im0)
-
             # Stream results
             if show_vid:
                 cv2.imshow(p, im0)
@@ -320,73 +290,11 @@ with torch.no_grad():
                         w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                     else:  # stream
-                        fps, w, h = 30, im0.shape[1], im0.shape[0]
+                        fps, w, h = 6, im0.shape[1], im0.shape[0]
                         save_path += '.mp4'
 
                     vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                 vid_writer.write(im0)
-
-
-        # Update Zonelist
-        # Zones update number of still in each zone
-        zone_stillcount = Zones.update_zone_still_count()
-
-        # Decision to pick which zone or person to target zoom
-        def pick_zone_tz(in_zonelist_buffer):
-            # THRESH_STILL is how many consecutive nstill in a zone per frame to trigger zoom
-            # This threshold is equivalent to 1 person standing still in a zone for at least 2sec
-            # at 20fps totaling 40. The mean of this specific zone will buffer size of 40 is 1.
-            # This is to prevent jitter noise of false stationary bnb
-            THRESH_STILL = 0.1
-            tmp_zonelist_buffer = np.array(in_zonelist_buffer)
-            meanA = np.mean(tmp_zonelist_buffer, axis=0)
-            meanA_sort_idx = np.argsort(meanA)[::-1]
-            for i in meanA_sort_idx:
-                if Zones.zones_tz_rec[i] == False and meanA[i] > THRESH_STILL:
-                    return i, meanA
-            return None, meanA
-
-        idx_zone_tz, meanA = pick_zone_tz(Zones.zonelist_buffer)
-        print(idx_zone_tz)
-        meanA = list(meanA)
-        with open("zonelog.txt", 'a') as f:
-            f.write(str(meanA)[1:-1] + '\n') # label format
-
-        if idx_zone_tz != None:
-            tmp_zone = Zones.zonelist[idx_zone_tz]
-            print("TARGET ZOOM HERE at ", str(tmp_zone.zoneID))
-            ptx, pty, bnbh = tmp_zone.get_bnb_pt_tz()
-            mag = ptz1.calc_mag(bnbh, 720)
-            p, t, z = ptz1.target_zoom((ptx, pty), mag)
-            ptz1.absmove(p, t, z)
-            target_zooming = True
-            zonelog2wrt = " TZ_ " + str(tmp_zone.zoneID)
-            while target_zooming:
-                # During target zooming, tracking will be temporary pause
-                # snapshots of frame will be taken
-                time.sleep(5)
-                target_zooming = False
-                TZ_frame_name = opt.output + '/' + str(frame_idx) + "_TZ_" + str(tmp_zone.zoneID) + ".jpg"
-                ret, tz_frame = cap_frame(RTSP)
-                if ret:
-                    cv2.imwrite(TZ_frame_name, tz_frame)
-                print("Done TARGET ZOOM!!!!")
-                Zones.zones_tz_rec[idx_zone_tz] = True
-
-            ptz1.absmove(*ptz1.home_ptx)
-        else:
-            zonelog2wrt = ""
-
-        Zones.update_frame_count()
-        with open("zonelog2.txt", 'a') as f:
-            f.write(str(meanA)[1:-1] + zonelog2wrt + '\n') # label format
-
-
-
-
-
-
-
 
     if save_txt or save_vid:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
@@ -394,34 +302,3 @@ with torch.no_grad():
             os.system('open ' + save_path)
 
     print('Done. (%.3fs)' % (time.time() - t0))
-
-
-# if __name__ == '__main__':
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument('--yolo_weights', type=str, default='yolov5/weights/yolov5s.pt', help='model.pt path')
-#     parser.add_argument('--deep_sort_weights', type=str, default='deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7', help='ckpt.t7 path')
-#     # file/folder, 0 for webcam
-#     parser.add_argument('--source', type=str, default='0', help='source')
-#     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
-#     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
-#     parser.add_argument('--conf-thres', type=float, default=0.4, help='object confidence threshold')
-#     parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
-#     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
-#     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-#     parser.add_argument('--show-vid', action='store_true', help='display tracking video results')
-#     parser.add_argument('--save-vid', action='store_true', help='save video tracking results')
-#     parser.add_argument('--save-txt', action='store_true', help='save MOT compliant results to *.txt')
-#     # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
-#     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --class 0, or --class 16 17')
-#     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
-#     parser.add_argument('--augment', action='store_true', help='augmented inference')
-#     parser.add_argument('--evaluate', action='store_true', help='augmented inference')
-#     parser.add_argument("--config_deepsort", type=str, default="deep_sort_pytorch/configs/deep_sort.yaml")
-#     args = parser.parse_args()
-#     args.img_size = check_img_size(args.img_size)
-#
-#     with torch.no_grad():
-#         detect(args)
-
-
-
