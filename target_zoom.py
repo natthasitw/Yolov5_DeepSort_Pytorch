@@ -49,7 +49,7 @@ class PTZ(object):
         self.frame0w = 2560
         self.frame0h = 1440
         # self.frame0 = self.cap_frame()
-        self.cap = cv.VideoCapture(self.rtsp)
+        # self.cap = cv.VideoCapture(self.rtsp)
         self.home_ptx = self.getptz()
 
 

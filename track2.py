@@ -103,7 +103,7 @@ class Opt:
         self.classes = 0,1
         self.agnostic_nms = True
         self.augment = True
-        self.config_deepsort = 'deep_sort_pytorch/configs/deep_sort2.yaml'
+        self.config_deepsort = 'deep_sort_pytorch/configs/deep_sort.yaml'
 
 opt = Opt()
 
@@ -122,7 +122,7 @@ with torch.no_grad():
                         max_dist=cfg.DEEPSORT.MAX_DIST, min_confidence=cfg.DEEPSORT.MIN_CONFIDENCE,
                         nms_max_overlap=cfg.DEEPSORT.NMS_MAX_OVERLAP, max_iou_distance=cfg.DEEPSORT.MAX_IOU_DISTANCE,
                         max_age=cfg.DEEPSORT.MAX_AGE, n_init=cfg.DEEPSORT.N_INIT, nn_budget=cfg.DEEPSORT.NN_BUDGET,
-                        use_cuda=True)
+                        use_cuda=False)
 
     # Initialize
     device = select_device(opt.device)
@@ -226,16 +226,16 @@ with torch.no_grad():
                         color = compute_color_for_id(id)
                         plot_one_box(bboxes, im0, label=label, color=color, line_thickness=2)
 
-                        if save_txt:
+                        # if save_txt:
                             # to MOT format
-                            bbox_left = output[0]
-                            bbox_top = output[1]
-                            bbox_w = output[2] - output[0]
-                            bbox_h = output[3] - output[1]
-                            # Write MOT compliant results to file
-                            with open(txt_path, 'a') as f:
-                                f.write(('%g ' * 12 + '\n') % (frame_idx, id, cls, bbox_left,
-                                                               bbox_top, bbox_w, bbox_h,-1, -1, -1, -1))  # label format
+                            # bbox_left = output[0]
+                            # bbox_top = output[1]
+                            # bbox_w = output[2] - output[0]
+                            # bbox_h = output[3] - output[1]
+                            # # Write MOT compliant results to file
+                            # with open(txt_path, 'a') as f:
+                            #     f.write(('%g ' * 12 + '\n') % (frame_idx, id, cls, bbox_left,
+                            #                                    bbox_top, bbox_w, bbox_h,-1, -1, -1, -1))  # label format
 
             else:
                 deepsort.increment_ages()

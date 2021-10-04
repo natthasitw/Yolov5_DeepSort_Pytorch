@@ -7,3 +7,5 @@ inference
 *.mp4
 vapix.log
 rec_video.py
+tmp.py
+source2.txt

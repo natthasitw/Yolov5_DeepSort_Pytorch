@@ -2,7 +2,7 @@ import sys
 sys.path.insert(0, './yolov5')
 from yolov5.utils.google_utils import attempt_download
 from yolov5.models.experimental import attempt_load
-from yolov5.utils.datasets import LoadImages, LoadStreams
+from yolov5.utils.datasets import LoadImages, LoadStreams, LoadStreams_2
 from yolov5.utils.general import check_img_size, non_max_suppression, scale_coords, check_imshow,xyxy2xywh
 from yolov5.utils.torch_utils import select_device, time_synchronized
 from deep_sort_pytorch.utils.parser import get_config
@@ -11,21 +11,18 @@ from yolov5.utils.plots import plot_one_box
 import os
 import platform
 import shutil
-import time
 from pathlib import Path
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
-import numpy as np
-from zone import ROI, ROIS
-from sensecam_control import onvif_control
-from matplotlib import pyplot as plt
-from Utils import cap_frame, see_center
-import pickle as pkl
+from zone import ROIS
 from collections import deque
 import yaml
+import threading
+import queue
 from Utils import *
 from target_zoom import *
+
 
 
 with open('config_dualcam.yaml') as f:
@@ -207,30 +204,32 @@ class TracksROIControl(ROIS):
         -------
 
         '''
-        tmp_tracks = np.array(self.track_buffer)
-        tmp_tracks = np.hstack((np.array([list(range(len(tmp_tracks)))]).T,
-                                 tmp_tracks))
-        for i in roi_priority:
-            ids_in_roi = tmp_tracks[tmp_tracks[:, 6] == i]
-            if ids_in_roi.shape[0] == 0:
-                continue
-            else:
-                for j in ids_in_roi:
-                    track_state = j[-1]
-                    # check if track has already been targeted zoom tracked.
-                    if track_state == 0:
-                        idx = j[0]
-                        selected_track = tmp_tracks[int(idx), :]
-                        selected_id = selected_track[1]
-                        return idx, selected_id
-                    else:
-                        continue
-        return None, None
+        if len(self.track_buffer) == 0:
+            return None, None
+        else:
+            tmp_tracks = np.array(self.track_buffer)
+            tmp_tracks = np.hstack((np.array([list(range(len(tmp_tracks)))]).T,
+                                     tmp_tracks))
+            for i in roi_priority:
+                ids_in_roi = tmp_tracks[tmp_tracks[:, 6] == i]
+                if ids_in_roi.shape[0] == 0:
+                    continue
+                else:
+                    for j in ids_in_roi:
+                        track_state = j[-1]
+                        # check if track has already been targeted zoom tracked.
+                        if track_state == 0:
+                            idx = j[0]
+                            selected_track = tmp_tracks[int(idx), :]
+                            selected_id = selected_track[1]
+                            return idx, selected_id
+                        else:
+                            continue
+            return None, None
 
 
-    def init_tzt_onID(self, idx, trackid, trackduration, ptz_fps=25):
+    def init_tzt_onID(self, idx, trackid, trackduration, vidpathwrite, ptz_fps=25):
         '''
-
         Parameters
         ----------
         idx: indexer to self.track_buffer with the person's info to track
@@ -248,7 +247,7 @@ class TracksROIControl(ROIS):
             selected_track = self.track_buffer[idx]
             self.tzt_duration = trackduration
             track_id = int(selected_track[0])
-            vid_track_name = "tzt_" + str(track_id) + ".avi"
+            vid_track_name = vidpathwrite + "_tzt_" + str(track_id) + ".mp4"
             ptz_writer = cv2.VideoWriter(vid_track_name, cv2.VideoWriter_fourcc(*'mp4v'), ptz_fps, (2560, 1440))
             print("INIT_TZT_ID:" + str(track_id))
             return ptz_writer
@@ -304,17 +303,37 @@ class TracksROIControl(ROIS):
     #     selected_id = self.current_tzt_id
     #     return centerx, centery, bnbh, selected_id
 
-
 PATH_ZONE = "fixed_cam_frame.json"
 TRC = TracksROIControl(PATH_ZONE)
 
-# FIX_MTX = np.array([[1.20558436e+03, 0.00000000e+00, 9.51119590e+02],
-#                 [0.00000000e+00, 1.20464537e+03, 5.38197931e+02],
-#                 [0.00000000e+00, 0.00000000e+00, 1.00000000e+00]])
-# FIX_DIST = np.array([[-3.92756351e-01,  1.83322215e-01,  5.99949881e-04, -2.82730083e-04, -4.42230163e-02]])
-# HOMO_FIX2PTZ_LMED = np.array([[2.11118231e+00, 2.49756039e-01, -8.80940998e+02],
-#                               [-2.12270102e-01, 2.05525697e+00, -3.00846856e+02],
-#                               [4.02324465e-05, 6.59003849e-05, 1.00000000e+00]])
+# bufferless VideoCapture
+class VideoCapture:
+
+  def __init__(self, name):
+    self.cap = cv2.VideoCapture(name)
+    self.q = queue.Queue()
+    t = threading.Thread(target=self._reader)
+    t.daemon = True
+    t.start()
+
+  # read frames as soon as they are available, keeping only most recent one
+  def _reader(self):
+    while True:
+      ret, frame = self.cap.read()
+      if not ret:
+        break
+      if not self.q.empty():
+        try:
+          self.q.get_nowait()   # discard previous (unprocessed) frame
+        except queue.Empty:
+          pass
+      self.q.put(frame)
+
+  def read(self):
+      if self.q.empty():
+          return None
+      else:
+          return self.q.get()
 
 
 # inFixMOTtxt = "../data/Hawkeye_Dataset/dual_cam/output_primDetHawk_conf3_iou3/Fix_cam_four_people.txt"
@@ -428,22 +447,23 @@ class Opt:
         # self.source = "../data/Hawkeye_Dataset/tracking/video1/SynxIPcam_urn-uuid-643C9869-12C593A8-001D-0000-000066334873_2020-11-21_17-23-00(1).mp4"
         self.yolo_weights = 'yolov5/weights/hawkeye_primarydet_2.pt'
         self.deep_sort_weights = 'deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7'
-        self.show_vid = False
+        self.show_vid = True
         self.save_vid = True
         self.save_txt = True
         self.img_size = 640
-        self.device = '0'
+        self.device = 'cpu'
         self.evaluate = True
-        self.conf_thres = 0.5
+        self.conf_thres = 0.6
         self.iou_thres = 0.3
         self.fourcc = 'mp4v'
-        self.classes = 0
+        self.classes = 1
         self.agnostic_nms = True
         self.augment = True
         self.config_deepsort = 'deep_sort_pytorch/configs/deep_sort.yaml'
 
 opt = Opt()
 
+ptz_vidcap = VideoCapture('rtsp://admin:Hikvisionarv1234@192.168.1.64')
 with torch.no_grad():
     out, source, yolo_weights, deep_sort_weights, show_vid, save_vid, save_txt, imgsz, evaluate = \
         opt.output, opt.source, opt.yolo_weights, opt.deep_sort_weights, opt.show_vid, opt.save_vid, \
@@ -489,6 +509,7 @@ with torch.no_grad():
 
     if webcam:
         cudnn.benchmark = True  # set True to speed up constant image size inference
+        dataset2 = LoadStreams_2(source, img_size=imgsz, stride=stride)
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
         dataset = LoadImages(source, img_size=imgsz)
@@ -506,7 +527,11 @@ with torch.no_grad():
     txt_file_name = source.split('/')[-1].split('.')[0]
     txt_path = str(Path(out)) + '/' + txt_file_name + '.txt'
 
-    for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset):
+    # frame_idx2, (path2, img2, im0s2, vid_cap2) = next(iter(enumerate(dataset2)))
+    # frame_idx, (path, img, im0s, vid_cap) = next(iter(enumerate(dataset)))
+    for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset2):
+        path = [path]
+        im0s = [im0s]
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -531,6 +556,7 @@ with torch.no_grad():
 
             s += '%gx%g ' % img.shape[2:]  # print string
             save_path = str(Path(out) / Path(p).name)
+            save_path_ptz = str(Path(out) / Path(p).name)
 
             if det is not None and len(det):
                 # Rescale boxes from img_size to im0 size
@@ -555,23 +581,23 @@ with torch.no_grad():
                     sel_idx, sel_id = TRC._get_priority_track_idx([2, 1, 0, -1])
 
                 if sel_idx != None and TRC.tztracking_state == False:
-                    ptz_writer = TRC.init_tzt_onID(int(sel_idx), int(sel_id), 300, 25)
+                    ptz_writer = TRC.init_tzt_onID(int(sel_idx), int(sel_id), 100, save_path_ptz, 6)
                 elif sel_idx != None and TRC.tztracking_state == True:
                     centerx, centery, bnbh, selected_id = TRC.pass_bnb(int(sel_idx), ptz_writer)
                     if centerx == None:
                         continue
                     else:
-                        manual_pts_fixed_undistort = cv.undistortPoints((x, y), Fixed_Cam_mtx, Fixed_Cam_dist, None,
-                                                                        Fixed_Cam_mtx)
+                        manual_pts_fixed_undistort = cv.undistortPoints((centerx, centery), Fixed_Cam_mtx, Fixed_Cam_dist, None, Fixed_Cam_mtx)
                         x, y = np.squeeze(manual_pts_fixed_undistort)
-                        ptx, pty = fixed2ptz(centerx, centery, HOMO_FIX2PTZ_LMED)
+                        ptx, pty = fixed2ptz(x, y, HOMO_FIX2PTZ_LMED)
                         mag = ptz_cam.calc_mag(bnbh, 720)
-                        p, t, z = ptz_cam.target_zoom((ptx, pty), mag)
-                        ptz_cam.absmove(p, t, z)
-
-                    ret, ptzframe = ptz_cam.cap.read()
-                    if ret and TRC.tztracking_state == True:
-                        ptz_writer.write(ptzframe)
+                        pan, tilt, zoom = ptz_cam.target_zoom((ptx, pty), mag)
+                        ptz_cam.absmove(pan, tilt, zoom)
+                    imgptz = ptz_vidcap.read()
+                    if imgptz is None:
+                        pass
+                    else:
+                        ptz_writer.write(imgptz)
                 ###### PTZ ######
 
 
@@ -632,37 +658,11 @@ with torch.no_grad():
                         w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                     else:  # stream
-                        fps, w, h = 30, im0.shape[1], im0.shape[0]
+                        fps, w, h = 6, im0.shape[1], im0.shape[0]
                         save_path += '.mp4'
 
                     vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                 vid_writer.write(im0)
-
-        # ###### PTZ ######
-        # TRC._update_tracks(outputs_v)
-        # if TRC.tztracking_state == False:
-        #     sel_idx, sel_id = TRC._get_priority_track_idx([2,1,0,-1])
-        #
-        # if sel_idx != None and TRC.tztracking_state == False:
-        #     ptz_writer = TRC.init_tzt_onID(int(sel_idx), int(sel_id), 300, 25)
-        # elif sel_idx != None and TRC.tztracking_state == True:
-        #     centerx, centery, bnbh, selected_id = TRC.pass_bnb(int(sel_idx), ptz_writer)
-        #     if centerx == None:
-        #         continue
-        #     else:
-        #         manual_pts_fixed_undistort = cv.undistortPoints((x, y), Fixed_Cam_mtx, Fixed_Cam_dist, None, Fixed_Cam_mtx)
-        #         x, y = np.squeeze(manual_pts_fixed_undistort)
-        #         ptx, pty = fixed2ptz(centerx, centery, HOMO_FIX2PTZ_LMED)
-        #         mag = ptz_cam.calc_mag(bnbh, 720)
-        #         p, t, z = ptz_cam.target_zoom((ptx, pty), mag)
-        #         ptz_cam.absmove(p, t, z)
-        #
-        #
-        #     ret, ptzframe = ptz_cam.cap.read()
-        #     if ret and TRC.tztracking_state == True:
-        #         ptz_writer.write(ptzframe)
-        # ###### PTZ ######
-
 
     if save_txt or save_vid:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
